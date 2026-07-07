@@ -1,0 +1,534 @@
+---
+title: " GSE79973 Gastric Cancer Gene Expression Analysis "
+author: "Pamini Likhit Kumarl"
+format: html
+editor: visual
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 7,
+  fig.height = 5
+)
+```
+
+```{r}
+dir.create("results", showWarnings = FALSE)
+dir.create("figures", showWarnings = FALSE)
+```
+
+## Required packages
+
+Run this installation chunk only once if the packages are not already installed.
+
+```{r install-packages, eval=FALSE}
+install.packages("BiocManager")
+BiocManager::install(c(
+  "GEOquery", "limma", "AnnotationDbi", "hgu133plus2.db",
+  "clusterProfiler", "org.Hs.eg.db", "enrichplot", "pheatmap"
+))
+install.packages("ggplot2")
+```
+
+```{r load-packages}
+library(GEOquery)
+library(limma)
+library(ggplot2)
+library(pheatmap)
+library(AnnotationDbi)
+library(hgu133plus2.db)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+```
+
+## Dataset description
+
+GSE79973 is a GEO microarray dataset which was selected because it contains paired gastric cancer and adjacent normal gastric tissue samples, making it suitable for identifying disease-associated gene expression changes.
+
+The use of 10 matched tumour–normal pairs reduces biological variability between individuals and improves the statistical power of the analysis.
+
+In addition, the dataset was generated using the Affymetrix Human Genome U133 Plus 2.0 Array platform, which provides comprehensive genome-wide gene expression measurements. This dataset therefore provides a reliable basis for investigating molecular mechanisms involved in gastric cancer.
+
+## Data download and sample metadata
+
+The raw Affymetrix CEL files for the GSE79973 dataset were imported into R and converted into an AffyBatch object. The dataset contains 20 samples consisting of 10 gastric cancer tissues and 10 matched adjacent normal tissues.
+
+Importing the raw data ensures that all preprocessing steps are performed consistently rather than relying on preprocessed values. The sample metadata was organised to correctly identify tumour and normal samples and to preserve patient pairing for downstream statistical analysis.
+
+```{r download-data}
+library(affy)
+
+cel_path <- "C:/Users/likhi/Desktop/PMD-2/Data interpretation/GSE79973_RAW"
+
+cel_files <- list.celfiles(cel_path, full.names = TRUE)
+
+raw_data <- ReadAffy(filenames = cel_files)
+
+eset <- rma(raw_data)
+
+expr <- exprs(eset)
+
+expr <- exprs(eset)
+pdata <- pData(eset)
+
+CA799 <- ReadAffy(filenames = cel_files)
+CA799
+
+expr_data  <- exprs(CA799)
+pheno_data <- pData(CA799)
+
+##CHECKING OUR DATASET 
+dim(expr_data)
+head(pheno_data)
+colnames(CA799)
+
+```
+
+```{r sample-information}
+library(affy)
+
+sample_names <- sampleNames(raw_data)
+
+sample_info <- data.frame(
+  sample = sample_names,
+  title = sample_names,
+  stringsAsFactors = FALSE
+)
+
+sample_info$group <- ifelse(
+  grepl("[0-9]C_", sample_info$title),
+  "Tumor",
+  "Normal"
+)
+sample_info$group <- factor(sample_info$group)
+
+sample_info$patient <- sub(
+  ".*_([0-9]+)[CN]_.*",
+  "Patient_\\1",
+  sample_info$title
+)
+sample_info$patient <- factor(sample_info$patient)
+```
+
+## Quality control before normalization
+
+Quality control before normalization was performed to assess the distribution of expression values across all 20 gastric tissue samples and to identify any potential technical variation or outlier arrays.
+
+The boxplot shows that although the samples have broadly similar expression distributions, there are noticeable differences in median expression levels and variability between arrays.
+
+No extreme outlier samples were observed that would require exclusion from the analysis.
+
+These differences are expected in raw microarray data and indicate that the samples are not yet directly comparable. Therefore, normalization is required to reduce technical variation and improve the reliability of downstream differential expression analysis
+
+```{r qc-before-boxplot}
+boxplot(
+  expr,
+  outline = FALSE,
+  las = 2,
+  main = "Expression distribution before additional normalization",
+  ylab = "Expression value"
+)
+```
+
+## Before PCA
+
+The PCA plot before additional normalization shows that the samples are mainly separated according to their biological groups. Most tumour samples are located on the left side of the plot, while the normal tissue samples are clustered on the right. However, there is still noticeable variation within each group, with a few samples lying further away from the main cluster. This indicates that although the biological differences between tumour and normal tissues are already apparent, some technical variation is still present in the dataset.
+
+```{r pca-before}
+pca_before <- prcomp(t(expr), scale. = TRUE)
+
+pca_before_df <- data.frame(
+  PC1 = pca_before$x[, 1],
+  PC2 = pca_before$x[, 2],
+  Group = sample_info$group,
+  Patient = sample_info$patient
+)
+
+ggplot(pca_before_df, aes(x = PC1, y = PC2, color = Group)) +
+  geom_point(size = 3) +
+  theme_bw() +
+  labs(
+    title = "PCA before additional normalization",
+    x = "PC1",
+    y = "PC2"
+  )
+
+```
+
+## Preprocessing and normalization {#sec-preprocessing-and-normalization}
+
+Raw Affymetrix CEL files were preprocessed using the Robust Multi-array Average (RMA) method, which performs background correction, log2 transformation, quantile normalization and probe summarization in a single workflow.
+
+These preprocessing steps reduce technical variation between arrays while maintaining true biological differences in gene expression.
+
+The resulting normalized expression matrix provides consistent and comparable expression values across all 20 samples.
+
+This improves the reliability of downstream analyses, including differential expression testing, gene annotation and functional enrichment analyses.
+
+```{r preprocessing-normalization}
+qx <- quantile(expr, c(0, 0.25, 0.5, 0.75, 0.99, 1), na.rm = TRUE)
+qx
+
+if (qx[5] > 100) {
+  expr_log <- log2(expr + 1)
+} else {
+  expr_log <- expr
+}
+
+expr_norm <- normalizeBetweenArrays(expr_log, method = "quantile")
+
+```
+
+## Quality control after normalization
+
+Quality control after normalization was performed to evaluate the effectiveness of the preprocessing step.
+
+The boxplot shows that the median expression values and overall distributions are now highly consistent across all 20 samples, indicating that technical variation between arrays has been substantially reduced.
+
+No obvious outlier samples are observed after normalization, suggesting that the data quality is suitable for downstream statistical analysis.
+
+The improved consistency confirms that the normalization procedure was successful and provides a reliable dataset for identifying differentially expressed genes between gastric cancer and matched normal tissues.
+
+```{r qc-after-boxplot}
+boxplot(
+  expr_norm,
+  outline = FALSE,
+  las = 2,
+  main = "Expression distribution after quantile normalization",
+  ylab = "Normalized expression value"
+)
+```
+
+## After PCA
+
+After quantile normalization, the overall separation between tumour and normal tissue samples is maintained. The samples within each group appear slightly more compact, suggesting that normalization has reduced technical variability while preserving the biological differences between the two groups. The continued separation of tumour and normal samples indicates that gene expression patterns differ consistently between the two tissue types and are suitable for downstream differential expression analysis.
+
+```{r pca-after}
+pca_after <- prcomp(t(expr_norm), scale. = TRUE)
+
+pca_after_df <- data.frame(
+  PC1 = pca_after$x[, 1],
+  PC2 = pca_after$x[, 2],
+  Group = sample_info$group,
+  Patient = sample_info$patient
+)
+
+ggplot(pca_after_df, aes(x = PC1, y = PC2, color = Group)) +
+  geom_point(size = 3) +
+  theme_bw() +
+  labs(
+    title = "PCA after quantile normalization",
+    x = "PC1",
+    y = "PC2"
+  )
+```
+
+## Differential expression analysis
+
+Differential expression analysis was performed using the limma package to compare gene expression between gastric cancer and matched normal gastric tissues.
+
+A paired study design was incorporated into the linear model to account for patient-specific variability, thereby improving the accuracy of detecting true biological differences. The empirical Bayes method was applied to increase statistical power by stabilizing variance estimates across all genes.
+
+The analysis generated log2 fold changes, t-statistics, raw p-values and Benjamini–Hochberg adjusted p-values for each gene.
+
+The top-ranked genes showed highly significant differential expression, with adjusted p-values of approximately 0.019, indicating that these genes are likely to be genuinely associated with gastric cancer.
+
+```{r differential-expression}
+design <- model.matrix(~ patient + group, data = sample_info)
+colnames(design) <- make.names(colnames(design))
+colnames(design)
+
+fit <- lmFit(expr_norm, design)
+fit <- eBayes(fit)
+
+deg <- topTable(
+  fit,
+  coef = "groupTumor",
+  adjust.method = "BH",
+  number = Inf
+)
+
+head(deg)
+```
+
+## Gene annotation
+
+Gene annotation was performed to convert the Affymetrix probe IDs obtained from the differential expression analysis into biologically meaningful gene information. The hgu133plus2.db annotation package was used to map each probe ID to its corresponding gene symbol, gene name, and Entrez Gene ID. Duplicate probe mappings were removed to retain a single annotation for each probe, and the annotation information was merged with the differential expression results.
+
+This produced a fully annotated list of differentially expressed genes that can be directly interpreted and used for downstream analyses such as identification of significant genes, Gene Ontology (GO) enrichment, KEGG pathway analysis, and biological interpretation.
+
+The annotated results show that each differentially expressed probe is now linked to its corresponding biological gene. For example, the first few significant genes include PIWIL2, BPNT2, KIF26B, and DUSP10, together with their gene symbols, gene names, and Entrez IDs.
+
+These annotations make it possible to understand the biological functions of the differentially expressed genes instead of interpreting only probe identifiers. The complete annotated gene list was also exported as a CSV file for use in the subsequent enrichment analyses.
+
+```{r gene-annotation}
+deg$PROBEID <- rownames(deg)
+
+annotation <- AnnotationDbi::select(
+  hgu133plus2.db,
+  keys = deg$PROBEID,
+  columns = c("SYMBOL", "GENENAME", "ENTREZID"),
+  keytype = "PROBEID"
+)
+
+annotation <- annotation[!duplicated(annotation$PROBEID), ]
+
+deg_annotated <- merge(
+  deg,
+  annotation,
+  by = "PROBEID",
+  all.x = TRUE
+)
+
+deg_annotated <- deg_annotated[order(deg_annotated$adj.P.Val), ]
+rownames(deg_annotated) <- deg_annotated$PROBEID
+
+head(deg_annotated)
+write.csv(deg_annotated, "results/GSE79973_all_genes_limma_annotated.csv", row.names = FALSE)
+```
+
+## Significant differentially expressed genes
+
+Significant differentially expressed genes (DEGs) were identified by applying an adjusted P-value threshold of \< 0.05 together with an absolute logFC ≥ 1.
+
+These criteria ensure that only genes showing both statistically significant and biologically meaningful changes in expression are retained. The filtered DEGs were then classified into upregulated and downregulated genes according to the direction of their log fold change.
+
+A total of 1,269 significant DEGs were identified in the gastric cancer samples compared with the matched normal tissues. Among these, 762 genes were upregulated, indicating higher expression in tumour tissue, while 507 genes were downregulated, indicating lower expression in tumour tissue.
+
+These significant genes represent the most important molecular changes associated with gastric cancer and were exported for downstream functional analyses, including Gene Ontology (GO) and KEGG pathway enrichment.
+
+```{r significant-degs}
+deg_sig <- subset(
+  deg_annotated,
+  adj.P.Val < 0.05 & abs(logFC) >= 1 & !is.na(SYMBOL)
+)
+
+up_genes <- subset(deg_sig, logFC >= 1)
+down_genes <- subset(deg_sig, logFC <= -1)
+
+deg_summary <- data.frame(
+  Category = c("Total significant DEGs", "Upregulated", "Downregulated"),
+  Count = c(nrow(deg_sig), nrow(up_genes), nrow(down_genes))
+)
+
+deg_summary
+
+write.csv(deg_sig, "results/GSE79973_significant_DEGs.csv", row.names = FALSE)
+write.csv(up_genes, "results/GSE79973_upregulated_genes.csv", row.names = FALSE)
+write.csv(down_genes, "results/GSE79973_downregulated_genes.csv", row.names = FALSE)
+write.csv(deg_summary, "results/GSE79973_DEG_summary.csv", row.names = FALSE)
+```
+
+## Volcano plot
+
+The volcano plot was used to show the relationship between the log₂ fold change and the adjusted p-value for all genes. The vertical dashed lines indicate the fold change cut-off (logFC = ±1), while the horizontal dashed line represents the significance threshold (adjusted p = 0.05).
+
+Genes that passed both thresholds are shown as significantly upregulated (blue) or downregulated (red), whereas the remaining genes are shown in green.
+
+From the volcano plot, it can be seen that most genes are clustered around the centre, indicating that they do not show large changes in expression. However, a clear number of genes lie outside the threshold lines, showing significant differences between gastric cancer and normal tissues.
+
+In this analysis, 762 genes were upregulated and 507 genes were downregulated, giving a total of 1,269 significant differentially expressed genes. These genes are the main candidates for further functional analysis, such as GO and KEGG pathway enrichment.
+
+```{r volcano-plot}
+deg_annotated$Significance <- "Not significant"
+deg_annotated$Significance[deg_annotated$adj.P.Val < 0.05 & deg_annotated$logFC >= 1] <- "Upregulated"
+deg_annotated$Significance[deg_annotated$adj.P.Val < 0.05 & deg_annotated$logFC <= -1] <- "Downregulated"
+deg_annotated$negLogAdjP <- -log10(pmax(deg_annotated$adj.P.Val, 1e-300))
+
+ggplot(deg_annotated, aes(x = logFC, y = negLogAdjP, color = Significance)) +
+  geom_point(alpha = 0.6, size = 1.2) +
+  theme_bw() +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  labs(
+    title = "Volcano plot: gastric cancer vs matched normal tissue",
+    x = "log2 fold change",
+    y = "-log10 adjusted p-value"
+  )
+```
+
+## Heatmap of top 50 DEGs
+
+A heatmap was generated using the top 50 most significantly differentially expressed genes to compare their expression patterns across all tumour and normal samples.
+
+Each row represents a gene, while each column represents a sample. The colours indicate the relative expression level of each gene, with red representing higher expression and blue representing lower expression after row-wise scaling.
+
+The heatmap shows a clear difference in gene expression patterns between the tumour and normal samples. Many genes that are highly expressed in the tumour samples show lower expression in the normal samples, and vice versa.
+
+The clustering of both genes and samples suggests that these top differentially expressed genes can effectively distinguish gastric cancer tissues from the matched normal tissues.
+
+This indicates that the selected genes are strongly associated with the molecular differences between the two groups and are suitable for further biological investigation
+
+```{r heatmap-top50}
+deg_sig <- deg_sig[order(deg_sig$adj.P.Val), ]
+top_n <- min(50, nrow(deg_sig))
+top_probes <- deg_sig$PROBEID[1:top_n]
+
+annotation_col <- data.frame(
+  Group = sample_info$group,
+  Patient = sample_info$patient
+)
+rownames(annotation_col) <- colnames(expr_norm)
+
+heatmap_matrix <- expr_norm[top_probes, ]
+rownames(heatmap_matrix) <- make.unique(deg_sig$SYMBOL[1:top_n])
+
+pheatmap(
+  heatmap_matrix,
+  scale = "row",
+  annotation_col = annotation_col,
+  show_colnames = FALSE,
+  fontsize_row = 7,
+  main = "Top 50 differentially expressed genes"
+)
+```
+
+## GO enrichment analysis
+
+Gene Ontology (GO) enrichment analysis was performed to identify the biological processes that are overrepresented among the significant differentially expressed genes.
+
+The analysis showed strong enrichment for processes such as extracellular matrix organization, extracellular structure organization, wound healing, and cell-substrate adhesion. These biological processes are closely related to tissue remodelling, cell migration, and tumour progression.
+
+The low adjusted p-values indicate that these enrichments are statistically significant and unlikely to have occurred by chance.
+
+Overall, the GO analysis suggests that changes in extracellular matrix organisation and tissue repair mechanisms play an important role in gastric cancer.
+
+```{r go-enrichment}
+gene_entrez <- unique(na.omit(deg_sig$ENTREZID))
+length(gene_entrez)
+
+if (length(gene_entrez) > 0) {
+  ego <- enrichGO(
+    gene = gene_entrez,
+    OrgDb = org.Hs.eg.db,
+    keyType = "ENTREZID",
+    ont = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff = 0.05,
+    qvalueCutoff = 0.05,
+    readable = TRUE
+  )
+
+  go_results <- as.data.frame(ego)
+  write.csv(go_results, "results/GSE79973_GO_BP_enrichment.csv", row.names = FALSE)
+
+  if (nrow(go_results) > 0) {
+    dotplot(ego, showCategory = 15) +
+      ggtitle("GO Biological Process enrichment")
+  }
+}
+```
+
+## KEGG pathway enrichment analysis
+
+KEGG pathway enrichment analysis was carried out to identify biological pathways associated with the significant genes. The enriched pathways included the PI3K-Akt signalling pathway, ECM-receptor interaction, Focal adhesion, Integrin signalling, and Proteoglycans in cancer.
+
+These pathways are well known for regulating cell growth, survival, adhesion, and communication with the surrounding tissue. The high GeneRatio values and low adjusted p-values indicate that many significant genes are involved in these pathways.
+
+Overall, the KEGG analysis suggests that disruption of cancer-related signalling pathways contributes to the development and progression of gastric cancer.
+
+```{r kegg-enrichment}
+if (length(gene_entrez) > 0) {
+  ekegg <- enrichKEGG(
+    gene = gene_entrez,
+    organism = "hsa",
+    pvalueCutoff = 0.05
+  )
+
+  kegg_results <- as.data.frame(ekegg)
+  write.csv(kegg_results, "results/GSE79973_KEGG_enrichment.csv", row.names = FALSE)
+
+  if (nrow(kegg_results) > 0) {
+    dotplot(ekegg, showCategory = 15) +
+      ggtitle("KEGG pathway enrichment")
+  }
+}
+```
+
+## Top genes for reporting
+
+The top 10 upregulated and top 10 downregulated genes were selected based on their adjusted p-values to highlight the most significant changes between tumour and normal tissues. These genes showed the strongest evidence of differential expression and are the best candidates for further biological investigation. Several genes, such as PIWIL2, PTGR1, and CEP192P1, appeared among the most significant genes, suggesting that they may have important roles in gastric cancer. Reporting these genes provides a focused list of potential biomarkers or therapeutic targets for future studies.
+
+```{r top-genes}
+top_up <- up_genes[order(up_genes$adj.P.Val), ][1:min(10, nrow(up_genes)), ]
+top_down <- down_genes[order(down_genes$adj.P.Val), ][1:min(10, nrow(down_genes)), ]
+
+write.csv(top_up, "results/GSE79973_top10_upregulated_genes.csv", row.names = FALSE)
+write.csv(top_down, "results/GSE79973_top10_downregulated_genes.csv", row.names = FALSE)
+
+top_up[, c("SYMBOL", "GENENAME", "logFC", "adj.P.Val")]
+top_down[, c("SYMBOL", "GENENAME", "logFC", "adj.P.Val")]
+
+
+
+
+```
+
+## CNet Plot
+
+The CNet plot shows the relationship between the significant genes and the enriched biological processes. Several genes are connected to multiple GO terms, suggesting that they may play important roles in gastric cancer development. Many of the enriched processes are related to extracellular matrix organisation, wound healing, cell adhesion and xenobiotic metabolism. Genes such as ADAMTS12, APOE, MMP7, LOX, FN1 and SPP1 are involved in multiple pathways, indicating that they may contribute to tissue remodelling, tumour invasion and interactions with the tumour microenvironment. In addition, genes involved in cell division, including TOP2A, CCNB1, CDC20 and members of the KIF family, are associated with chromosome segregation and mitotic processes, suggesting increased cell proliferation in gastric cancer tissues.
+
+```{r cnet-plot}
+cnetplot(ego,   showCategory = 20, foldChange = NULL)
+```
+
+## Network Pharmacology
+
+The enrichment map groups together GO biological processes that share similar genes. Several closely connected clusters are observed, indicating that many enriched pathways are biologically related rather than acting independently. One major cluster is associated with extracellular matrix organisation, collagen organisation, connective tissue development and cell-substrate adhesion, highlighting extensive remodelling of the tumour microenvironment. Another cluster contains mitotic nuclear division, chromosome segregation and sister chromatid segregation, reflecting increased cell cycle activity in tumour cells. Additional clusters related to wound healing, xenobiotic metabolism and gastric acid secretion further suggest changes in tissue repair, metabolism and normal gastric function during gastric cancer progression. Overall, the enrichment map demonstrates that multiple biological processes work together to support tumour growth and disease progression.
+
+```{r emap-plot}
+library(enrichplot)
+ego_sim_up <- pairwise_termsim(ego)
+emapplot(ego_sim_up, showCategory = 30)
+
+```
+
+## Biological interpretation
+
+In this study, the microarray dataset GSE79973 was used to identify the differences in expression levels of genes between gastric cancer tissue and neighbouring normal stomach tissue. A paired research design was employed to limit patient to patient variance and so gene expression variations may be more clearly attributed to tumour progression rather than individual biological characteristics. GSE79973 was also used for similar paired analysis, with results showing that this technique increases the detection of physiologically meaningful indicators in gastric cancer. [@hu2020]
+
+\
+Following quality control and quantile normalisation, the expression distributions across all 20 samples were quite consistent, suggesting that technical variance between arrays was successfully eliminated. Principal component analysis (PCA) further indicated a strong difference between cancer and normal tissues, and the heatmap of the top 50 differentially expressed genes (DEGs) exhibited unique grouping of the two groups. Collectively, these data suggest that gastric cancer is characterised by a distinctive transcriptional profile, which is significantly different from the normal gastric mucosa.
+
+\
+Differential expression analysis discovered 1,269 significant DEGs, including 762 upregulated and 507 downregulated DEGs. The volcano plot indicated that most genes did not have significant alterations whereas a specific selection of genes was dramatically changed with huge fold changes. This shows that the development of stomach cancer is caused by alterations in particular biological pathways rather than global modification of the whole transcriptome.
+
+\
+Many of the very important genes found in this study have been previously connected with advancement of gastric cancer. Among the elevated genes, MMP7 and LOX are particularly noteworthy since both are involved in extracellular matrix (ECM) remodelling. MMP7 destroys components of the basement membrane, promoting tumour invasion and metastasis, whereas LOX stimulates collagen cross-linking, increasing tissue stiffness and producing a tumour microenvironment that supports cancer cell migration [@samuels2023][@moiso2022]. These findings are in line with the enrichment of extracellular matrix organization, collagen metabolism and wound healing revealed in the GO analysis.
+
+\
+The CNet plot also indicated that genes FN1, ADAMTS12, APOE, SPP1 and MMP7 were associated with numerous enriched biological processes. These genes are more likely to be hub genes since they engage in several pathways concurrently, rather than controlling only one biological activity. Similar discoveries were made by Khan et al., who identified FN1 and SPP1 as key network hubs in stomach cancer using integrated GEO dataset analysis [@pei2024]. The biological importance of the present discoveries is underlined by their role in extracellular matrix remodelling, cell adhesion and cancer invasion.
+
+\
+Another important finding from the research was the concentration of genes involved in cell division and chromosomal segregation. The CNet plot revealed TOP2A, CDC20, CCNB1 and certain members of KIF family as important genes for mitotic processes. These genes are involved in DNA replication, chromosomal segregation and cell cycle progression, suggesting that stomach cancer cells proliferate rapidly and uncontrolled. Recent work has identified TOP2A, CDC20 and CCNB1 as important biomarkers linked with accelerated tumour development and poor prognosis in gastric cancer, corroborating the results reported in our study [@hossen2024].
+
+\
+Functional enrichment analysis further indicated that the discovered DEGs were engaged in biological processes related with tumour development. GO enrichment analysis showed extracellular matrix organisation, extracellular structure organisation, collagen metabolic process, wound healing, cell-substrate adhesion and reaction to xenobiotic stimuli. Many of these mechanisms directly contribute to tumour invasion by modulating interactions between cancer cells and the surrounding extracellular matrix. In addition, the enrichment of wound healing pathways supports the idea of the tumour as a chronic wound, with ongoing tissue remodelling that is conducive to tumour growth.[@moiso2022]
+
+\
+KEGG pathway study revealed considerable enrichment of PI3K-Akt signalling pathway, ECM-receptor interaction, focal adhesion, integrin signalling and proteoglycans in cancer. Together, these routes control cell proliferation, survival, migration, and communication with the extracellular matrix. Activation of the PI3K-Akt signalling pathway is one of the key molecular pathways in gastric cancer, which enhances cell survival and inhibits apoptosis [@sun2026]. Also, focal adhesion and ECM-receptor interaction pathways improve the attachment of cancer cells to the extracellular matrix, increasing their capability to move and infiltrate neighbouring tissues [@zhao2023]. The enrichment of these pathways in the present study is in good agreement with the existing understanding of stomach cancer biology.
+
+\
+Overall, the results reported in this investigation are in good agreement with published transcriptome studies of gastric cancer. The discovery of extracellular matrix remodelling, enhanced cell cycle activity, changed adhesion signalling and activation of PI3K-Akt signalling indicates that these molecular pathways are important for gastric cancer progression [@samuels2023; @moiso2022; @hu2020; @pei2024; @sun2026]. Furthermore, the concordance between the differential expression analysis, GO enrichment, KEGG pathway analysis and network analysis gives confidence that the discovered genes represent physiologically relevant changes and not statistical artefacts.
+
+## Limitations
+
+There are certain limitations to be addressed in interpreting these findings. First, the study used a single publicly accessible microarray dataset with only 20 samples (10 paired tumor-normal tissues). The paired design decreases patient specific variability but the relatively small sample size restricts the generalisability of the results.
+
+\
+Second, the analysis was based on microarray technique that only measured preset probes and with a lesser dynamic range than RNA sequencing. Therefore, new transcripts, splice variants and genes with extremely low expression levels might not have been found [@stark2019]
+
+\
+Finally, our research was purely computational. Several physiologically important genes and pathways were discovered but no experimental confirmation was done by quantitative PCR, western blotting or immunohistochemistry. Additional laboratory investigations are needed to validate the biological relevance of these potential biomarkers.
+
+## Future Perspectives
+
+Future research should confirm the findings on independent patient cohorts of bigger cohorts and of RNA sequencing datasets to increase the statistical power and transcriptome coverage [@stark2019]. Experimental confirmation of key genes found in this work including MMP7, LOX, FN1, ADAMTS12, TOP2A and CDC20 would make them more promising as diagnostic or prognostic biomarkers [@samuels2023; @moiso2022; @stark2019; @hossen2024].
+
+Integration of transcriptome data with proteomics, metabolomics, and clinical outcome data will further enhance the knowledge of stomach cancer development. Besides, further exploration of the PI3K-Akt signalling pathway, ECM-receptor interaction, focal adhesion and extracellular matrix remodelling should offer insights into the development of targeted therapeutics aiming at suppressing cancer invasion and metastasis [@samuels2023; @sun2026; @zhao2023]. Such multi-omics techniques may potentially enhance personalised therapy regimens for people with gastric cancer.
