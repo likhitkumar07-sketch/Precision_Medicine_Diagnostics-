@@ -1,6 +1,6 @@
 ---
 title: " GSE79973 Gastric Cancer Gene Expression Analysis "
-author: "Pamini Likhit Kumarl"
+author: "Pamini Likhit Kumar"
 format: html
 editor: visual
 bibliography: references.bib
